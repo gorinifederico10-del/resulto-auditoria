@@ -1,0 +1,35 @@
+# Secretos — no subir nunca
+.env
+.env.local
+.env.*.local
+
+# DB local — Railway usa volume aparte
+auditorias.db
+*.db-journal
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# IDEs / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Builds / logs
+dist/
+build/
+*.egg-info/
+*.log
+
+# Playwright cache local
+.playwright/

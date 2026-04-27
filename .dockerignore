@@ -1,0 +1,17 @@
+.env
+.env.*
+*.db
+*.db-journal
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+node_modules/
+DEPLOY.md
