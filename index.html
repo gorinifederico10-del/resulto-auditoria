@@ -785,6 +785,25 @@
     align-items: flex-start;
     position: relative;
   }
+  .tech-blocked {
+    margin-top: 22px;
+    padding: 20px 24px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(234,179,8,0.10), rgba(234,179,8,0.02));
+    border-left: 3px solid #ca8a04;
+    font-size: 14.5px;
+    line-height: 1.6;
+  }
+  .tech-blocked-title {
+    font-weight: 700;
+    color: var(--fg);
+    margin-bottom: 8px;
+    font-size: 15px;
+  }
+  .tech-blocked-text {
+    color: var(--fg);
+  }
+  .tech-blocked-text strong { font-weight: 700; }
   .tech-summary.good {
     background: linear-gradient(135deg, rgba(136,213,0,0.12), rgba(136,213,0,0.03));
     border-left: 3px solid var(--primary-dark);
@@ -1630,6 +1649,29 @@
   }
 
   function renderSetupTecnico(s) {
+    // Si la web bloqueó al analizador (común en Cloudflare/WAF), mostramos cartel honesto
+    if (s && s.bloqueado) {
+      return `
+        <div class="tech-section">
+          <div class="tech-head">
+            <div class="tech-head-icon">${ICON_HEAD}</div>
+            <div class="tech-head-text">
+              <div class="tech-section-title">Setup técnico oculto</div>
+              <div class="tech-section-sub">El estado interno de tu web: tracking, SEO técnico y previews al compartir.</div>
+            </div>
+          </div>
+          <div class="tech-blocked">
+            <div class="tech-blocked-title">No pudimos analizar el setup técnico de este sitio</div>
+            <div class="tech-blocked-text">
+              La web bloqueó el análisis automático — algo común en sitios grandes con protecciones tipo Cloudflare o WAF que filtran herramientas automatizadas.
+              <strong>No significa que el sitio esté mal configurado</strong>: simplemente no podemos leer su tracking y SEO técnico desde acá.
+              La parte visual y el puntaje general sí son válidos, porque los hace una IA mirando capturas reales de la web.
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
     const tr = s.tracking || {};
     const seo = s.seo || {};
     const soc = s.social_y_datos || {};

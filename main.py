@@ -368,21 +368,54 @@ def capturar_web_sync(url: str) -> dict:
         "viewport_meta": None,
         "lang_attribute": None,
         "external_scripts_count": 0,
+        "bloqueado": False,
+        "html_length": 0,
+        "final_url": None,
         "error": None,
     }
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            # Args para parecer un navegador real, no un bot
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
+            )
 
-            # Desktop
+            # Desktop — UA completo y headers de navegador real
             context = browser.new_context(
-                viewport={"width": 1280, "height": 900},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36"
+                viewport={"width": 1366, "height": 900},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                locale="es-AR",
+                timezone_id="America/Argentina/Buenos_Aires",
+                extra_http_headers={
+                    "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "Upgrade-Insecure-Requests": "1",
+                    "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                    "Sec-Ch-Ua-Mobile": "?0",
+                    "Sec-Ch-Ua-Platform": '"Windows"',
+                },
+            )
+            # Sacamos la huella típica de navegador automatizado
+            context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
             )
             page = context.new_page()
             start = time.time()
-            page.goto(url, wait_until="networkidle", timeout=30000)
+            # domcontentloaded es mucho más robusto que networkidle en sitios pesados
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            # Esperamos a que carguen scripts/tracking que se inyectan post-DOM
+            try:
+                page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+            time.sleep(2)
             resultado["load_time_ms"] = int((time.time() - start) * 1000)
+            resultado["final_url"] = page.url
 
             # Screenshots desktop
             resultado["screenshots"].append(("desktop_top", page.screenshot(full_page=False)))
@@ -483,15 +516,46 @@ def capturar_web_sync(url: str) -> dict:
             }""")
             resultado.update(tech)
 
-            # Mobile
-            context_mobile = browser.new_context(viewport={"width": 375, "height": 667})
+            # Detección de bloqueo / bot detection
+            # Si el HTML es muy chico, sin título, sin scripts externos y sin OG → muy probable que nos hayan bloqueado
+            try:
+                html_len = page.evaluate("document.documentElement.outerHTML.length")
+            except Exception:
+                html_len = 0
+            resultado["html_length"] = html_len
+
+            sin_contenido = (
+                html_len < 5000
+                and not resultado.get("title")
+                and resultado.get("external_scripts_count", 0) < 2
+                and not resultado.get("has_og_tags")
+            )
+            # Si la URL pedida era HTTPS pero el navegador reporta is_https=false → algo raro
+            url_pedida_https = url.lower().startswith("https://")
+            https_inconsistente = url_pedida_https and resultado.get("is_https") is False
+
+            if sin_contenido or https_inconsistente:
+                resultado["bloqueado"] = True
+
+            # Mobile — mismo UA y configuración
+            context_mobile = browser.new_context(
+                viewport={"width": 390, "height": 844},
+                user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+                locale="es-AR",
+                extra_http_headers={"Accept-Language": "es-AR,es;q=0.9,en;q=0.8"},
+            )
             page_m = context_mobile.new_page()
             try:
-                page_m.goto(url, wait_until="networkidle", timeout=30000)
+                page_m.goto(url, wait_until="domcontentloaded", timeout=30000)
+                try:
+                    page_m.wait_for_load_state("networkidle", timeout=6000)
+                except Exception:
+                    pass
+                time.sleep(1)
                 resultado["screenshots"].append(("mobile", page_m.screenshot(full_page=False)))
                 has_h_scroll = page_m.evaluate("document.documentElement.scrollWidth > window.innerWidth + 5")
                 resultado["mobile_friendly"] = not has_h_scroll
-            except Exception as e:
+            except Exception:
                 resultado["mobile_friendly"] = False
 
             browser.close()
@@ -632,6 +696,9 @@ TONO DE TUS RESPUESTAS (importante):
         "total_imagenes": captura.get("total_images"),
     }
     data["setup_tecnico"] = {
+        "bloqueado": bool(captura.get("bloqueado")),
+        "final_url": captura.get("final_url"),
+        "html_length": captura.get("html_length"),
         "tracking": {
             "meta_pixel": captura.get("has_meta_pixel"),
             "google_analytics": captura.get("has_google_analytics"),
@@ -1003,42 +1070,58 @@ def generar_html_pdf(data: dict, url_analizada: str, fecha: str) -> str:
     tech_html = ""
     setup = data.get("setup_tecnico") or {}
     if setup:
-        tr = setup.get("tracking", {}) or {}
-        seo = setup.get("seo", {}) or {}
-        soc = setup.get("social_y_datos", {}) or {}
+        if setup.get("bloqueado"):
+            # La web bloqueó a nuestro analizador (común en sitios grandes con WAF / Cloudflare)
+            tech_html = """
+            <div class="section-title">Setup técnico</div>
+            <div class="tech-blocked">
+              <div class="tech-blocked-title">No pudimos analizar el setup técnico de este sitio</div>
+              <div class="tech-blocked-text">
+                La web bloqueó el análisis automático (suele pasar con sitios grandes que tienen
+                protecciones tipo Cloudflare o WAF que filtran herramientas automatizadas).
+                Esto <strong>no significa que el sitio esté mal configurado</strong> — simplemente
+                no podemos leer su tracking y SEO técnico desde acá. La parte visual y la
+                puntuación general sí son válidas porque las hace una IA mirando capturas reales.
+              </div>
+            </div>
+            """
+        else:
+            tr = setup.get("tracking", {}) or {}
+            seo = setup.get("seo", {}) or {}
+            soc = setup.get("social_y_datos", {}) or {}
 
-        def row(label, ok):
-            icon = "✓" if ok else "✗"
-            cls = "ok" if ok else "no"
-            return f'<div class="tech-row {cls}"><span class="tech-icon">{icon}</span><span>{_html_escape(label)}</span></div>'
+            def row(label, ok):
+                icon = "✓" if ok else "✗"
+                cls = "ok" if ok else "no"
+                return f'<div class="tech-row {cls}"><span class="tech-icon">{icon}</span><span>{_html_escape(label)}</span></div>'
 
-        tech_html = f"""
-        <div class="section-title">Setup técnico</div>
-        <div class="tech-grid">
-          <div class="tech-group">
-            <div class="tech-group-title">Medición & tracking</div>
-            {row("Pixel de Meta", tr.get("meta_pixel"))}
-            {row("Google Analytics", tr.get("google_analytics"))}
-            {row("Google Tag Manager", tr.get("google_tag_manager"))}
-            {row("TikTok Pixel", tr.get("tiktok_pixel"))}
-            {row("Hotjar / mapas de calor", tr.get("hotjar"))}
-          </div>
-          <div class="tech-group">
-            <div class="tech-group-title">SEO técnico</div>
-            {row("HTTPS (sitio seguro)", seo.get("https"))}
-            {row("Title de la página", bool(seo.get("title")))}
-            {row("Meta description", bool(seo.get("meta_description")))}
-            {row("Tag canonical", seo.get("canonical"))}
-            {row("Atributo lang en HTML", bool(seo.get("lang")))}
-            {row("Favicon", seo.get("favicon"))}
-          </div>
-          <div class="tech-group">
-            <div class="tech-group-title">Compartir & Google</div>
-            {row("Open Graph (preview en redes)", soc.get("open_graph"))}
-            {row("Schema markup (datos enriquecidos)", soc.get("schema_markup"))}
-          </div>
-        </div>
-        """
+            tech_html = f"""
+            <div class="section-title">Setup técnico</div>
+            <div class="tech-grid">
+              <div class="tech-group">
+                <div class="tech-group-title">Medición & tracking</div>
+                {row("Pixel de Meta", tr.get("meta_pixel"))}
+                {row("Google Analytics", tr.get("google_analytics"))}
+                {row("Google Tag Manager", tr.get("google_tag_manager"))}
+                {row("TikTok Pixel", tr.get("tiktok_pixel"))}
+                {row("Hotjar / mapas de calor", tr.get("hotjar"))}
+              </div>
+              <div class="tech-group">
+                <div class="tech-group-title">SEO técnico</div>
+                {row("HTTPS (sitio seguro)", seo.get("https"))}
+                {row("Title de la página", bool(seo.get("title")))}
+                {row("Meta description", bool(seo.get("meta_description")))}
+                {row("Tag canonical", seo.get("canonical"))}
+                {row("Atributo lang en HTML", bool(seo.get("lang")))}
+                {row("Favicon", seo.get("favicon"))}
+              </div>
+              <div class="tech-group">
+                <div class="tech-group-title">Compartir & Google</div>
+                {row("Open Graph (preview en redes)", soc.get("open_graph"))}
+                {row("Schema markup (datos enriquecidos)", soc.get("schema_markup"))}
+              </div>
+            </div>
+            """
 
     return f"""<!DOCTYPE html>
 <html lang="es">
@@ -1142,6 +1225,17 @@ def generar_html_pdf(data: dict, url_analizada: str, fecha: str) -> str:
   .problema-text {{ font-size: 10.5pt; line-height: 1.5; color: #1a1a1a; }}
 
   /* Setup técnico */
+  .tech-blocked {{
+    border: 1px solid #f0e6c8; background: #fffbef;
+    border-radius: 12px; padding: 14px 16px;
+    page-break-inside: avoid;
+  }}
+  .tech-blocked-title {{
+    font-weight: 700; font-size: 11.5pt; color: #6b5a1f; margin-bottom: 6px;
+  }}
+  .tech-blocked-text {{
+    font-size: 10.5pt; line-height: 1.5; color: #3d3a2f;
+  }}
   .tech-grid {{
     display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
     page-break-inside: avoid;
