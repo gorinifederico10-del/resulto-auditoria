@@ -1,5 +1,6 @@
 import os
 import io
+import re
 import csv
 import json
 import time
@@ -627,11 +628,14 @@ def capturar_web_sync(url: str) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────
-# Google PageSpeed Insights (sin API key)
+# Google PageSpeed Insights (con API key opcional para subir el rate limit)
 # ─────────────────────────────────────────────────────────────
 def obtener_pagespeed_sync(url: str) -> dict:
     api = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
-    resultado = {"performance": None, "accessibility": None, "best_practices": None, "seo": None, "error": None}
+    resultado = {
+        "performance": None, "accessibility": None,
+        "best_practices": None, "seo": None, "error": None,
+    }
     try:
         params = [
             ("url", url),
@@ -641,6 +645,9 @@ def obtener_pagespeed_sync(url: str) -> dict:
             ("category", "seo"),
             ("strategy", "desktop"),
         ]
+        api_key = os.getenv("PAGESPEED_API_KEY", "").strip()
+        if api_key:
+            params.append(("key", api_key))
         r = requests.get(api, params=params, timeout=60)
         if r.status_code == 200:
             data = r.json()
@@ -655,6 +662,138 @@ def obtener_pagespeed_sync(url: str) -> dict:
     except Exception as e:
         resultado["error"] = str(e)
     return resultado
+
+
+# ─────────────────────────────────────────────────────────────
+# Wayback Machine — fallback cuando Cloudflare/WAF bloquea Playwright
+# Tomamos el HTML cacheado por archive.org y lo analizamos como si fuera
+# nuestra propia captura.
+# ─────────────────────────────────────────────────────────────
+def obtener_html_wayback(url: str) -> str | None:
+    """Devuelve el HTML del snapshot más reciente de archive.org, o None."""
+    try:
+        check = requests.get(
+            "https://archive.org/wayback/available",
+            params={"url": url},
+            timeout=10,
+        )
+        data = check.json()
+        snap = data.get("archived_snapshots", {}).get("closest", {})
+        if not snap.get("available"):
+            return None
+        timestamp = snap.get("timestamp", "")
+        if not timestamp:
+            return None
+        # El sufijo "id_" después del timestamp devuelve el HTML original
+        # sin la barra ni los inserts de Wayback.
+        raw_url = f"https://web.archive.org/web/{timestamp}id_/{url}"
+        resp = requests.get(
+            raw_url,
+            timeout=20,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+            },
+        )
+        if resp.status_code == 200 and resp.text:
+            return resp.text
+    except Exception:
+        pass
+    return None
+
+
+def analizar_html_estatico(html: str, url: str) -> dict:
+    """
+    Aplica el mismo análisis que Playwright sobre HTML estático
+    (de Wayback o cualquier fuente). Devuelve el mismo shape de campos.
+    """
+    out = {
+        "title": None, "title_length": 0,
+        "meta_description": None, "meta_description_length": 0,
+        "is_https": url.lower().startswith("https://"),
+        "has_canonical": False, "has_robots_meta": False,
+        "lang_attribute": None, "viewport_meta": None, "has_favicon": False,
+        "has_meta_pixel": False, "has_google_analytics": False,
+        "has_gtm": False, "has_tiktok_pixel": False, "has_hotjar": False,
+        "has_og_tags": False, "og_tags_found": [],
+        "has_schema_markup": False, "schema_types": [],
+        "external_scripts_count": 0,
+    }
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        # Title
+        if soup.title and soup.title.string:
+            t = soup.title.string.strip()
+            out["title"] = t[:300]
+            out["title_length"] = len(t)
+        # Meta description
+        md = soup.find("meta", attrs={"name": re.compile(r"^description$", re.I)})
+        if md and md.get("content"):
+            d = md["content"].strip()
+            out["meta_description"] = d[:500]
+            out["meta_description_length"] = len(d)
+        # Canonical
+        out["has_canonical"] = bool(soup.find("link", attrs={"rel": re.compile(r"canonical", re.I)}))
+        # Robots
+        out["has_robots_meta"] = bool(soup.find("meta", attrs={"name": re.compile(r"^robots$", re.I)}))
+        # Lang
+        if soup.html and soup.html.get("lang"):
+            out["lang_attribute"] = soup.html.get("lang")
+        # Viewport
+        vp = soup.find("meta", attrs={"name": re.compile(r"^viewport$", re.I)})
+        if vp and vp.get("content"):
+            out["viewport_meta"] = vp["content"]
+        # Favicon
+        out["has_favicon"] = bool(soup.find("link", attrs={"rel": re.compile(r"icon", re.I)}))
+        # OG tags
+        og = [m.get("property") for m in soup.find_all("meta") if m.get("property", "").lower().startswith("og:")]
+        og = [x for x in og if x]
+        out["og_tags_found"] = og[:10]
+        out["has_og_tags"] = bool(og)
+        # Schema markup (JSON-LD)
+        types = []
+        for sc in soup.find_all("script", attrs={"type": "application/ld+json"}):
+            try:
+                payload = json.loads(sc.string or "")
+                items = payload if isinstance(payload, list) else [payload]
+                for it in items:
+                    if isinstance(it, dict) and "@type" in it:
+                        v = it["@type"]
+                        if isinstance(v, list):
+                            types.extend(str(x) for x in v)
+                        else:
+                            types.append(str(v))
+            except Exception:
+                pass
+        out["schema_types"] = list(dict.fromkeys(types))[:10]
+        out["has_schema_markup"] = bool(types)
+        # Tracking — buscamos tanto en src de scripts como en código inline
+        scripts_html = " ".join(
+            [(s.get("src") or "") + " " + (s.string or "") for s in soup.find_all("script")]
+        )
+        out["has_meta_pixel"] = bool(re.search(r"fbevents\.js|fbq\s*\(\s*['\"]init|fbq\s*\(\s*['\"]track", scripts_html, re.I))
+        out["has_gtm"] = bool(re.search(r"googletagmanager\.com/gtm\.js|GTM-[A-Z0-9]+", scripts_html))
+        out["has_google_analytics"] = bool(re.search(r"google-analytics\.com/analytics\.js|googletagmanager\.com/gtag/js|UA-\d+-\d+|G-[A-Z0-9]+", scripts_html))
+        out["has_tiktok_pixel"] = bool(re.search(r"analytics\.tiktok\.com|ttq\.load|ttq\.track", scripts_html, re.I))
+        out["has_hotjar"] = bool(re.search(r"static\.hotjar\.com|hjid", scripts_html, re.I))
+        # External scripts count
+        external = 0
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(url).netloc.lower()
+            for s in soup.find_all("script"):
+                src = s.get("src") or ""
+                if src and "://" in src and host not in src.lower():
+                    external += 1
+        except Exception:
+            pass
+        out["external_scripts_count"] = external
+    except Exception as e:
+        out["parse_error"] = str(e)
+    return out
 
 
 # ─────────────────────────────────────────────────────────────
@@ -678,6 +817,57 @@ async def analizar_url_full(
     contenido = await asyncio.to_thread(scrape_sitio, url)
     captura = await asyncio.to_thread(capturar_web_sync, url)
     pagespeed = await asyncio.to_thread(obtener_pagespeed_sync, url)
+
+    # ─── Fallback cuando Playwright bloqueó: pedir HTML a Wayback Machine ───
+    # archive.org no le importa Cloudflare. Si tiene un snapshot, parseamos
+    # ese HTML y mergeamos los datos sobre la captura.
+    fuente_datos = "playwright"
+    if captura.get("bloqueado"):
+        html_archivado = await asyncio.to_thread(obtener_html_wayback, url)
+        if html_archivado:
+            datos_alt = analizar_html_estatico(html_archivado, url)
+            for k, v in datos_alt.items():
+                # Solo pisamos si en la captura ese campo es vacío/falso
+                cur = captura.get(k)
+                if cur in (None, "", 0, False, []):
+                    captura[k] = v
+            # Si recuperamos title y al menos algún dato real, ya no está
+            # "ciego": destrabamos para que el modelo y el frontend muestren
+            # data real con disclaimer de fuente.
+            if datos_alt.get("title") or datos_alt.get("has_og_tags") or datos_alt.get("external_scripts_count", 0) > 0:
+                captura["bloqueado"] = False
+                captura["fuente"] = "wayback"
+                fuente_datos = "wayback"
+
+    # Si Playwright se rompió Y Wayback tampoco trajo nada, marcamos
+    # "ciego" para no llamar a Gemini con data fantasma. La respuesta final
+    # va a indicar que no se pudo auditar.
+    sin_data_real = (
+        captura.get("bloqueado")
+        and not captura.get("title")
+        and (captura.get("external_scripts_count", 0) or 0) == 0
+        and not captura.get("has_og_tags")
+    )
+    if sin_data_real:
+        return {
+            "no_se_pudo_auditar": True,
+            "url_analizada": url,
+            "rubro_analizado": rubro,
+            "razon": (
+                "Este sitio bloqueó nuestro análisis automático (suele pasar con webs "
+                "protegidas por Cloudflare o WAFs). Tampoco encontramos un snapshot "
+                "reciente en archive.org. No vamos a inventar un puntaje sobre datos "
+                "que no pudimos leer."
+            ),
+            "pagespeed": pagespeed,
+            "setup_tecnico": {
+                "bloqueado": True,
+                "fuente": None,
+                "tracking": {"meta_pixel": None, "google_analytics": None, "google_tag_manager": None, "tiktok_pixel": None, "hotjar": None},
+                "seo": {"https": None, "title": None, "title_length": 0, "meta_description": None, "meta_description_length": 0, "canonical": None, "robots_meta": None, "lang": None, "favicon": None},
+                "social_y_datos": {"open_graph": None, "og_tags": [], "schema_markup": None, "schema_types": []},
+            },
+        }
 
     extras = f"""
 {contexto_extra}
@@ -759,6 +949,7 @@ TONO DE TUS RESPUESTAS (importante):
     }
     data["setup_tecnico"] = {
         "bloqueado": bool(captura.get("bloqueado")),
+        "fuente": captura.get("fuente") or fuente_datos,
         "final_url": captura.get("final_url"),
         "html_length": captura.get("html_length"),
         "tracking": {

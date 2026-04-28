@@ -1456,6 +1456,32 @@
   function renderResultado(data) {
     loader.classList.remove('active');
 
+    // ─── Caso especial: no se pudo auditar (bot bloqueado y sin fallback) ───
+    if (data.no_se_pudo_auditar) {
+      resultado.innerHTML = `
+        <div class="score-card" style="border-color: #f59e0b; background: linear-gradient(180deg, #fffbeb 0%, #ffffff 100%);">
+          <div class="score-label" style="color:#b45309;">No pudimos auditar este sitio</div>
+          <div style="font-size:60px; line-height:1; margin: 18px 0 8px; color:#f59e0b;">⚠️</div>
+          <div class="score-resumen" style="max-width: 620px; margin: 18px auto 0;">
+            ${escapeHtml(data.razon || 'El sitio bloqueó nuestro análisis automático y no encontramos un snapshot público para reanalizarlo.')}
+          </div>
+          <div style="font-size:14px; color: var(--muted); margin-top: 22px; line-height:1.55;">
+            Suele pasar con webs grandes detrás de Cloudflare o de un WAF.<br>
+            Probá con tu propia web (los sitios de pymes no suelen tener este problema)
+            o con una versión sin protección anti-bot.
+          </div>
+          <div class="score-actions" style="margin-top: 28px;">
+            <button class="share-btn" onclick="window.scrollTo({top:0, behavior:'smooth'}); document.querySelector('input[name=url]')?.focus();">
+              Probar con otra web
+            </button>
+          </div>
+        </div>
+      `;
+      resultado.classList.add('active');
+      window.scrollTo({ top: resultado.offsetTop - 40, behavior: 'smooth' });
+      return;
+    }
+
     const ps = data.pagespeed || {};
     const mt = data.metricas_tecnicas || {};
 
@@ -1675,6 +1701,12 @@
     const tr = s.tracking || {};
     const seo = s.seo || {};
     const soc = s.social_y_datos || {};
+    const fuenteAviso = s.fuente === 'wayback'
+      ? `<div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:10px; padding:10px 14px; margin-bottom:18px; font-size:13px; color:#1e40af; line-height:1.5;">
+           <strong>Nota:</strong> esta web bloqueó nuestra lectura directa, así que tomamos el HTML del último snapshot público en archive.org.
+           Los datos de tracking y SEO pueden estar levemente desactualizados.
+         </div>`
+      : '';
 
     // Title / desc → estados con criterio
     const titleLen = seo.title_length || 0;
@@ -1793,6 +1825,7 @@
             <div class="tech-section-sub">El estado interno de tu web: el tracking instalado, el SEO técnico y cómo aparece en Google y las redes sociales cuando se comparte el link.</div>
           </div>
         </div>
+        ${fuenteAviso}
         <div class="tech-grid">
           ${trackingHtml}
           ${seoHtml}
