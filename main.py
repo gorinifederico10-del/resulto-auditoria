@@ -618,6 +618,11 @@ def capturar_web_sync(url: str) -> dict:
             browser.close()
     except Exception as e:
         resultado["error"] = str(e)
+        # Si Playwright explotó antes de capturar nada, casi seguro fue bloqueo
+        # (timeout por challenge de Cloudflare, 403, navigation aborted, etc).
+        # Marcamos bloqueado para mostrar el cartel honesto en vez de un listado
+        # rojo engañoso.
+        resultado["bloqueado"] = True
     return resultado
 
 
