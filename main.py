@@ -370,6 +370,8 @@ def capturar_web_sync(url: str) -> dict:
         "external_scripts_count": 0,
         "bloqueado": False,
         "html_length": 0,
+        "body_text_length": 0,
+        "missing_weight": 0,
         "final_url": None,
         "error": None,
     }
@@ -516,25 +518,80 @@ def capturar_web_sync(url: str) -> dict:
             }""")
             resultado.update(tech)
 
-            # Detección de bloqueo / bot detection
-            # Si el HTML es muy chico, sin título, sin scripts externos y sin OG → muy probable que nos hayan bloqueado
+            # ─── Detección de bloqueo / bot detection ───
+            # Tres caminos: (1) título de challenge page, (2) HTTPS inconsistente,
+            # (3) score ponderado de "señales básicas faltantes" — una web real, aún
+            # mala, tiene la mayoría de estas cosas básicas.
             try:
                 html_len = page.evaluate("document.documentElement.outerHTML.length")
             except Exception:
                 html_len = 0
             resultado["html_length"] = html_len
 
-            sin_contenido = (
-                html_len < 5000
-                and not resultado.get("title")
-                and resultado.get("external_scripts_count", 0) < 2
-                and not resultado.get("has_og_tags")
-            )
-            # Si la URL pedida era HTTPS pero el navegador reporta is_https=false → algo raro
+            try:
+                body_text_len = page.evaluate("(document.body && document.body.innerText || '').length")
+            except Exception:
+                body_text_len = 0
+            resultado["body_text_length"] = body_text_len
+
+            # 1) Título característico de Cloudflare / WAF / challenge pages
+            title_lower = (resultado.get("title") or "").lower()
+            challenge_markers = [
+                "just a moment",
+                "attention required",
+                "access denied",
+                "checking your browser",
+                "cloudflare",
+                "ddos protection",
+                "verifying you are human",
+                "verifica que eres humano",
+                "verificación de seguridad",
+                "un momento",
+                "please wait",
+                "403 forbidden",
+                "bot detection",
+            ]
+            is_challenge = bool(title_lower) and any(m in title_lower for m in challenge_markers)
+
+            # 2) Inconsistencia HTTPS — pedimos https:// pero el navegador no llegó
             url_pedida_https = url.lower().startswith("https://")
             https_inconsistente = url_pedida_https and resultado.get("is_https") is False
 
-            if sin_contenido or https_inconsistente:
+            # 3) Score ponderado de señales básicas faltantes
+            # Pesos: cuanto más raro es que falte, más pesa.
+            missing_weight = 0
+            if not resultado.get("title"):
+                missing_weight += 3  # casi ninguna web real no tiene título
+            if resultado.get("external_scripts_count", 0) == 0:
+                missing_weight += 3  # sin scripts externos es muy raro
+            if not resultado.get("has_favicon"):
+                missing_weight += 1
+            if not resultado.get("lang_attribute"):
+                missing_weight += 1
+            if not resultado.get("viewport_meta"):
+                missing_weight += 1
+            if not resultado.get("meta_description"):
+                missing_weight += 1
+            if not resultado.get("has_og_tags"):
+                missing_weight += 1
+            tracking_count = sum([
+                bool(resultado.get("has_meta_pixel")),
+                bool(resultado.get("has_google_analytics")),
+                bool(resultado.get("has_gtm")),
+                bool(resultado.get("has_tiktok_pixel")),
+                bool(resultado.get("has_hotjar")),
+            ])
+            if tracking_count == 0:
+                missing_weight += 1
+            if html_len < 8000:
+                missing_weight += 2  # contenido sospechosamente chico
+            if body_text_len < 200:
+                missing_weight += 2  # body casi vacío = probable challenge / shell
+
+            resultado["missing_weight"] = missing_weight
+
+            # Decisión final
+            if is_challenge or https_inconsistente or missing_weight >= 7:
                 resultado["bloqueado"] = True
 
             # Mobile — mismo UA y configuración
