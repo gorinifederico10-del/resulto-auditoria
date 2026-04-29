@@ -1701,12 +1701,21 @@
     const tr = s.tracking || {};
     const seo = s.seo || {};
     const soc = s.social_y_datos || {};
-    const fuenteAviso = s.fuente === 'wayback'
-      ? `<div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:10px; padding:10px 14px; margin-bottom:18px; font-size:13px; color:#1e40af; line-height:1.5;">
+    let fuenteAviso = '';
+    if (s.fuente === 'wayback') {
+      fuenteAviso = `<div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:10px; padding:10px 14px; margin-bottom:18px; font-size:13px; color:#1e40af; line-height:1.5;">
            <strong>Nota:</strong> esta web bloqueó nuestra lectura directa, así que tomamos el HTML del último snapshot público en archive.org.
            Los datos de tracking y SEO pueden estar levemente desactualizados.
-         </div>`
-      : '';
+         </div>`;
+    } else if (s.fuente === 'jina') {
+      fuenteAviso = `<div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:10px; padding:10px 14px; margin-bottom:18px; font-size:13px; color:#1e40af; line-height:1.5;">
+           <strong>Nota:</strong> esta web bloqueó nuestro navegador, así que la analizamos vía Jina Reader (un proxy de scraping). Los datos están actualizados, pero no pudimos sacarle screenshots.
+         </div>`;
+    } else if (s.bloqueado) {
+      fuenteAviso = `<div style="background:#fef3c7; border:1px solid #fcd34d; border-radius:10px; padding:10px 14px; margin-bottom:18px; font-size:13px; color:#92400e; line-height:1.5;">
+           <strong>Nota:</strong> esta web tiene protección anti-bot fuerte. Pudimos sacar los scores oficiales de Google PageSpeed, pero no leer su HTML ni su tracking. El análisis va con la data que sí pudimos medir.
+         </div>`;
+    }
 
     // Title / desc → estados con criterio
     const titleLen = seo.title_length || 0;

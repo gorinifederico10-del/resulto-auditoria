@@ -1034,14 +1034,28 @@ async def analizar_url_full(
         if _mergear_html(html_jina, "jina"):
             fuente_datos = "jina"
 
-    # Si Playwright se rompió Y Wayback tampoco trajo nada, marcamos
-    # "ciego" para no llamar a Gemini con data fantasma. La respuesta final
-    # va a indicar que no se pudo auditar.
+    # Solo damos el cartel "no se pudo auditar" si TODAS las fuentes
+    # fallaron: Playwright bloqueado, Wayback sin snapshot, Jina bloqueado,
+    # scrape simple sin contenido Y PageSpeed sin scores. Es decir, cero
+    # data real de ninguna parte. En cualquier otro caso, corremos el
+    # análisis con lo que tengamos.
+    tiene_pagespeed = any(
+        pagespeed.get(k) is not None
+        for k in ("performance", "seo", "accessibility", "best_practices")
+    )
+    tiene_html_data = bool(
+        captura.get("title")
+        or captura.get("meta_description")
+        or captura.get("has_og_tags")
+        or (captura.get("external_scripts_count", 0) or 0) > 0
+    )
+    tiene_contenido = bool(contenido and len(contenido) > 200)
+
     sin_data_real = (
         captura.get("bloqueado")
-        and not captura.get("title")
-        and (captura.get("external_scripts_count", 0) or 0) == 0
-        and not captura.get("has_og_tags")
+        and not tiene_html_data
+        and not tiene_contenido
+        and not tiene_pagespeed
     )
     if sin_data_real:
         return {
@@ -1049,10 +1063,10 @@ async def analizar_url_full(
             "url_analizada": url,
             "rubro_analizado": rubro,
             "razon": (
-                "Este sitio bloqueó nuestro análisis automático (suele pasar con webs "
-                "protegidas por Cloudflare o WAFs). Tampoco encontramos un snapshot "
-                "reciente en archive.org. No vamos a inventar un puntaje sobre datos "
-                "que no pudimos leer."
+                "Este sitio bloqueó todas nuestras fuentes de análisis: navegador "
+                "directo, archive.org, Jina Reader y PageSpeed Insights. Es muy "
+                "raro que pase. Probá con otra URL o verificá que el dominio "
+                "esté online."
             ),
             "pagespeed": pagespeed,
             "setup_tecnico": {
@@ -1064,9 +1078,38 @@ async def analizar_url_full(
             },
         }
 
+    # Disclaimer al modelo sobre la fuente de los datos.
+    aviso_fuente = ""
+    if fuente_datos == "wayback":
+        aviso_fuente = (
+            "⚠️ FUENTE DE DATOS: el sitio bloqueó nuestro análisis directo, "
+            "así que tomamos el HTML del último snapshot en archive.org. La "
+            "data puede tener semanas o meses. Las screenshots no se pudieron "
+            "tomar — calificá las dimensiones visuales por inferencia (tipo "
+            "de tags, framework, modernidad del HTML) o ponéle puntaje "
+            "neutral 5 si realmente no tenés cómo evaluar.\n\n"
+        )
+    elif fuente_datos == "jina":
+        aviso_fuente = (
+            "⚠️ FUENTE DE DATOS: el sitio bloqueó nuestro navegador, así que "
+            "usamos Jina Reader (proxy que renderiza con su propio browser). "
+            "El HTML está actualizado pero las screenshots no se pudieron "
+            "tomar — calificá las dimensiones visuales por inferencia o "
+            "ponéle puntaje neutral 5 si realmente no tenés cómo evaluar.\n\n"
+        )
+    elif captura.get("bloqueado"):
+        aviso_fuente = (
+            "⚠️ FUENTE DE DATOS: el sitio bloqueó casi todo nuestro análisis, "
+            "pero sí tenemos los scores oficiales de Google PageSpeed. "
+            "Concentrá tu análisis en lo que SÍ podés calificar con esos "
+            "números (velocidad, SEO, accesibilidad). Para las dimensiones "
+            "visuales que no podés ver, ponéle puntaje neutral 5 y aclaralo "
+            "en el resumen.\n\n"
+        )
+
     extras = f"""
 {contexto_extra}
-DATOS OBJETIVOS MEDIDOS POR UN NAVEGADOR REAL:
+{aviso_fuente}DATOS OBJETIVOS MEDIDOS POR UN NAVEGADOR REAL:
 - Tiempo de carga: {captura.get('load_time_ms')} ms
 - Mobile-friendly (sin scroll horizontal en celu): {captura.get('mobile_friendly')}
 - Imágenes rotas: {captura.get('broken_images')} de {captura.get('total_images')}
