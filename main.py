@@ -187,6 +187,134 @@ def guardar_auditoria(
     raise RuntimeError("No pude generar un share_id único")
 
 # ─────────────────────────────────────────────────────────────
+# Steering por objetivo: lo que el dueño marcó en el form
+# define cómo enfocamos el análisis y las recomendaciones.
+# ─────────────────────────────────────────────────────────────
+def guia_por_objetivo(objetivo: str) -> str:
+    """
+    Devuelve un bloque de instrucciones para meter dentro del prompt,
+    indicando cómo enfocar el análisis según lo que marcó el dueño.
+    """
+    obj = (objetivo or "").strip().lower()
+
+    # Mapeo flexible: contiene palabras clave del objetivo elegido en el form.
+    if "más clientes" in obj or "mas clientes" in obj or "clientes" in obj:
+        return """
+ENFOQUE OBLIGATORIO DE ESTA AUDITORÍA — el dueño marcó: "Conseguir más clientes"
+
+PRIORIZÁ las dimensiones que IMPACTAN en captación de clientes:
+1) llamado_a_accion (¿cómo te contactan? ¿es claro? ¿hay incentivo?)
+2) credibilidad (¿hay testimonios, casos, equipo? ¿confío?)
+3) claridad_propuesta (¿se entiende qué hace y para quién en 5s?)
+4) contenido_relevante (¿le habla al cliente o solo de sí mismos?)
+
+Los 4 problemas que reportes deben estar ENFOCADOS en por qué la web no
+está generando consultas/contactos. Cada "que_te_cuesta" tiene que hablar
+en términos de CLIENTES PERDIDOS, consultas que no entran, gente que ve
+la web y se va sin contactar. Nada de hablar de ventas online o de marca
+en abstracto: el problema acá es generación de demanda.
+
+El cierre tiene que invitar a una charla específicamente sobre cómo
+convertir más visitas en clientes/consultas.
+"""
+
+    if "ventas online" in obj or "ventas" in obj or "ecommerce" in obj or "vender" in obj:
+        return """
+ENFOQUE OBLIGATORIO DE ESTA AUDITORÍA — el dueño marcó: "Aumentar ventas online"
+
+PRIORIZÁ las dimensiones que IMPACTAN en conversión y compra:
+1) llamado_a_accion (¿el botón de comprar es claro? ¿hay fricción?)
+2) credibilidad (testimonios, garantías, formas de pago, devoluciones)
+3) velocidad_tecnica (cada segundo extra de carga = ventas perdidas)
+4) experiencia_moderna (mobile, checkout, fluidez del proceso)
+5) diseno_visual (la web vende confianza para que pongan la tarjeta)
+
+Los 4 problemas deben estar ENFOCADOS en por qué la web pierde ventas en
+el embudo. Cada "que_te_cuesta" tiene que hablar en términos de CARRITOS
+ABANDONADOS, ventas perdidas, conversión baja. Pensá funnel: entran,
+miran, dudan, se van. ¿Dónde se cae?
+
+Si NO tiene Pixel de Meta o GA → mencionarlo como problema crítico:
+no podés optimizar lo que no medís y estás tirando guita en publicidad.
+
+El cierre invita a una charla específicamente sobre cómo subir el
+porcentaje de visitas que terminan comprando.
+"""
+
+    if "autoridad" in obj or "conocido" in obj or "referente" in obj or "marca personal" in obj:
+        return """
+ENFOQUE OBLIGATORIO DE ESTA AUDITORÍA — el dueño marcó: "Ganar autoridad / ser más conocido"
+
+PRIORIZÁ las dimensiones que IMPACTAN en posicionamiento y autoridad:
+1) encontrabilidad (¿Google te muestra? ¿con qué títulos? ¿meta description?)
+2) contenido_relevante (¿hay contenido que demuestre expertise?)
+3) credibilidad (casos, números, premios, equipo visible, prensa)
+4) diseno_visual (un referente del rubro se ve premium, no plantilla)
+
+Los 4 problemas deben estar ENFOCADOS en por qué la web no construye
+autoridad. Cada "que_te_cuesta" tiene que hablar en términos de
+VISIBILIDAD, alcance perdido, gente que no te encuentra, o que te
+encuentra pero no te percibe como referente.
+
+Sumá problemas de SEO técnico (title genérico, meta description vacía,
+no hay schema, no hay blog) si aplican: son obstáculos directos para
+ganar autoridad orgánica.
+
+El cierre invita a una charla sobre cómo ser referente del rubro y que
+el mercado te conozca.
+"""
+
+    if "imagen de marca" in obj or "imagen" in obj or "branding" in obj or "marca" in obj:
+        return """
+ENFOQUE OBLIGATORIO DE ESTA AUDITORÍA — el dueño marcó: "Mejorar la imagen de marca"
+
+PRIORIZÁ las dimensiones que IMPACTAN en percepción visual y marca:
+1) diseno_visual (tipografía, color, jerarquía, sensación premium)
+2) experiencia_moderna (¿se siente 2025 o 2012?)
+3) claridad_propuesta (la marca tiene que comunicar qué es y para quién)
+4) credibilidad (una marca fuerte muestra clientes, equipo, casos)
+
+Los 4 problemas deben estar ENFOCADOS en cómo la web hoy DESALINEA con
+la marca que el dueño quiere proyectar. Cada "que_te_cuesta" tiene que
+hablar en términos de PERCEPCIÓN: lo que la web comunica vs lo que el
+negocio realmente vale, oportunidades comerciales perdidas porque "se
+ve barato" o "se ve viejo", clientes premium que no compran porque la
+web no transmite ese nivel.
+
+El cierre invita a una charla sobre cómo alinear lo que la web
+transmite con el posicionamiento que el negocio quiere tener.
+"""
+
+    if "ahorrar tiempo" in obj or "tiempo" in obj or "automatiz" in obj or "delegar" in obj:
+        return """
+ENFOQUE OBLIGATORIO DE ESTA AUDITORÍA — el dueño marcó: "Ahorrar tiempo en marketing"
+
+PRIORIZÁ las dimensiones que IMPACTAN en eficiencia operativa:
+1) velocidad_tecnica (web lenta = más tiempo soportando reclamos)
+2) encontrabilidad (sin SEO básico, todo el tráfico depende de pagar)
+3) llamado_a_accion (formularios bien armados ahorran ida y vuelta)
+
+Los 4 problemas deben estar ENFOCADOS en cómo la web hoy le HACE PERDER
+TIEMPO al dueño y por qué le toca hacer todo a mano. Cada
+"que_te_cuesta" tiene que hablar en términos de HORAS DE LA SEMANA
+gastadas en cosas que la web debería resolver sola: responder lo
+mismo por WhatsApp porque no está claro en la web, no saber qué
+publicidad funciona porque no hay tracking, escribir contenido y
+publicarlo "a ojo" sin saber si rinde.
+
+Sumá fuerte el setup técnico: si NO tiene Pixel/GA/GTM, ese es el
+nudo central — sin medición, todo lo demás se hace a ciegas y por
+ende a mano.
+
+El cierre invita a una charla sobre cómo poner el marketing "en piloto
+automático" con sistemas que trabajen mientras él hace otra cosa.
+"""
+
+    # Fallback: objetivo no especificado o no reconocido.
+    return ""
+
+
+# ─────────────────────────────────────────────────────────────
 # Prompt maestro
 # ─────────────────────────────────────────────────────────────
 PROMPT_MAESTRO = """
@@ -251,7 +379,15 @@ PROMEDIO simple de las 8 dimensiones, redondeado. NO SUAVICES. Si da 2.6 → sco
 PROBLEMAS A REPORTAR
 ═══════════════════════════════════════════════════════════
 
-Los 4 más graves (4 dimensiones más bajas).
+ANTES DE ELEGIR LOS PROBLEMAS: leé el bloque "ENFOQUE OBLIGATORIO DE
+ESTA AUDITORÍA" que está más abajo en este prompt. Ese bloque te dice
+qué le interesa al dueño (más clientes, más ventas, autoridad, marca o
+ahorrar tiempo). Los 4 problemas que reportes tienen que estar
+ENFOCADOS en eso, no ser un análisis genérico. El "que_te_cuesta" tiene
+que hablar el idioma del objetivo del dueño. El cierre tiene que
+invitar a una charla específicamente sobre ese objetivo.
+
+Los 4 más graves (priorizá los que afectan al objetivo del dueño).
 
 REGLA CRÍTICA: SÉ CONCISO. Nada de choclos largos. El dueño está escaneando, no leyendo un ensayo.
 
@@ -922,6 +1058,8 @@ TONO DE TUS RESPUESTAS (importante):
 - Sin modismos callejeros. No usar expresiones tipo "tirar guita", "volar a ciegas", "estás al horno", "una papa".
 - Sí podés usar "vos" rioplatense (es un público argentino), pero el registro debe ser sobrio y profesional.
 - Cuando algo está mal, decílo con firmeza, pero con respeto y datos.
+
+{guia_por_objetivo(objetivo)}
 """
 
     prompt_final = PROMPT_MAESTRO.format(
