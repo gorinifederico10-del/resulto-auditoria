@@ -805,6 +805,40 @@ def obtener_pagespeed_sync(url: str) -> dict:
 # Tomamos el HTML cacheado por archive.org y lo analizamos como si fuera
 # nuestra propia captura.
 # ─────────────────────────────────────────────────────────────
+def obtener_via_jina(url: str) -> str | None:
+    """
+    Pega a Jina Reader (r.jina.ai) — un proxy gratis que renderiza el sitio
+    en su propia infra y devuelve el HTML ya procesado. Pasa Cloudflare /
+    WAFs porque el bloqueo lo come Jina, no nosotros.
+
+    Tier free no requiere auth pero tiene rate limit. Si tenés JINA_API_KEY
+    en .env la usamos para subir el límite.
+
+    Devuelve HTML crudo o None si falló.
+    """
+    try:
+        headers = {
+            "Accept": "text/html",
+            "X-Return-Format": "html",
+            "X-Engine": "browser",  # forzar render real, no scraping rapido
+            "User-Agent": "Mozilla/5.0 (compatible; RESULTO-Auditoria/1.0)",
+        }
+        api_key = os.getenv("JINA_API_KEY", "").strip()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        resp = requests.get(
+            f"https://r.jina.ai/{url}",
+            headers=headers,
+            timeout=45,  # Jina con browser tarda
+        )
+        if resp.status_code == 200 and resp.text and len(resp.text) > 500:
+            return resp.text
+    except Exception:
+        pass
+    return None
+
+
 def obtener_html_wayback(url: str) -> str | None:
     """Devuelve el HTML del snapshot más reciente de archive.org, o None."""
     try:
@@ -954,26 +988,51 @@ async def analizar_url_full(
     captura = await asyncio.to_thread(capturar_web_sync, url)
     pagespeed = await asyncio.to_thread(obtener_pagespeed_sync, url)
 
-    # ─── Fallback cuando Playwright bloqueó: pedir HTML a Wayback Machine ───
-    # archive.org no le importa Cloudflare. Si tiene un snapshot, parseamos
-    # ese HTML y mergeamos los datos sobre la captura.
+    # ─── Cascada de fallbacks cuando Playwright bloqueó ───
+    # Ninguno de estos servicios sufre Cloudflare como nosotros, porque
+    # ellos ya pasaron el WAF (Wayback los whitelistea por ser archivo,
+    # Jina renderiza con su propio browser cluster).
     fuente_datos = "playwright"
+
+    def _mergear_html(html_externo: str, etiqueta: str) -> bool:
+        """
+        Parsea HTML de una fuente alternativa y mergeamos datos sobre la
+        captura. Devuelve True si se destrabó el bloqueo, False si no.
+        """
+        if not html_externo:
+            return False
+        datos_alt = analizar_html_estatico(html_externo, url)
+        for k, v in datos_alt.items():
+            # Solo pisamos si en la captura ese campo es vacío/falso
+            cur = captura.get(k)
+            if cur in (None, "", 0, False, []):
+                captura[k] = v
+        # Si recuperamos title y al menos algún dato real, ya no está
+        # "ciego": destrabamos para que el modelo y el frontend muestren
+        # data real con disclaimer de fuente.
+        if (
+            datos_alt.get("title")
+            or datos_alt.get("has_og_tags")
+            or datos_alt.get("external_scripts_count", 0) > 0
+        ):
+            captura["bloqueado"] = False
+            captura["fuente"] = etiqueta
+            return True
+        return False
+
     if captura.get("bloqueado"):
-        html_archivado = await asyncio.to_thread(obtener_html_wayback, url)
-        if html_archivado:
-            datos_alt = analizar_html_estatico(html_archivado, url)
-            for k, v in datos_alt.items():
-                # Solo pisamos si en la captura ese campo es vacío/falso
-                cur = captura.get(k)
-                if cur in (None, "", 0, False, []):
-                    captura[k] = v
-            # Si recuperamos title y al menos algún dato real, ya no está
-            # "ciego": destrabamos para que el modelo y el frontend muestren
-            # data real con disclaimer de fuente.
-            if datos_alt.get("title") or datos_alt.get("has_og_tags") or datos_alt.get("external_scripts_count", 0) > 0:
-                captura["bloqueado"] = False
-                captura["fuente"] = "wayback"
-                fuente_datos = "wayback"
+        # Fallback 1: Wayback Machine (archive.org)
+        html_wb = await asyncio.to_thread(obtener_html_wayback, url)
+        if _mergear_html(html_wb, "wayback"):
+            fuente_datos = "wayback"
+
+    if captura.get("bloqueado"):
+        # Fallback 2: Jina Reader (r.jina.ai) — renderiza con su browser
+        # propio y devuelve HTML procesado. Pasa Cloudflare porque el WAF
+        # bloquea a NUESTRO IP, no al de Jina.
+        html_jina = await asyncio.to_thread(obtener_via_jina, url)
+        if _mergear_html(html_jina, "jina"):
+            fuente_datos = "jina"
 
     # Si Playwright se rompió Y Wayback tampoco trajo nada, marcamos
     # "ciego" para no llamar a Gemini con data fantasma. La respuesta final
