@@ -1458,7 +1458,7 @@
 
     // ─── Caso especial: no se pudo auditar (bot bloqueado y sin fallback) ───
     if (data.no_se_pudo_auditar) {
-      resultado.innerHTML = `
+      resultWrap.innerHTML = `
         <div class="score-card" style="border-color: #f59e0b; background: linear-gradient(180deg, #fffbeb 0%, #ffffff 100%);">
           <div class="score-label" style="color:#b45309;">No pudimos auditar este sitio</div>
           <div style="font-size:60px; line-height:1; margin: 18px 0 8px; color:#f59e0b;">⚠️</div>
@@ -1477,8 +1477,8 @@
           </div>
         </div>
       `;
-      resultado.classList.add('active');
-      window.scrollTo({ top: resultado.offsetTop - 40, behavior: 'smooth' });
+      resultWrap.classList.add('active');
+      window.scrollTo({ top: resultWrap.offsetTop - 40, behavior: 'smooth' });
       return;
     }
 
