@@ -160,6 +160,120 @@ def gen_share_id() -> str:
     return "".join(secrets.choice(alphabet) for _ in range(6))
 
 
+def notificar_lead_por_mail(
+    share_id: str,
+    email_lead: str,
+    url: str,
+    rubro: str,
+    tiempo: str,
+    publicidad: str,
+    objetivo: str,
+    score: int,
+    desde_cache: bool = False,
+) -> None:
+    """
+    Avisa al admin (Federico) por mail cada vez que alguien completa una
+    auditoría. Usa la API de Resend (https://resend.com).
+
+    Variables de entorno requeridas:
+      RESEND_API_KEY  → la API key de Resend (re_xxx)
+      NOTIFY_EMAIL    → el mail al que llegan los avisos
+
+    Si alguna no está configurada, no se manda nada (no rompe). Si la API
+    devuelve error, lo logueamos pero no rompemos la auditoría del usuario.
+    """
+    api_key = os.getenv("RESEND_API_KEY", "").strip()
+    notify_to = os.getenv("NOTIFY_EMAIL", "").strip()
+    if not api_key or not notify_to:
+        return
+
+    # Remitente: si tenés dominio propio configurado en Resend, usalo.
+    # Si no, cae al sandbox de Resend que NO requiere setup de DNS.
+    from_addr = os.getenv("NOTIFY_FROM", "RESULTO Auditorías <onboarding@resend.dev>").strip()
+
+    # URL pública del share (si NOTIFY_BASE_URL no está, queda relativa)
+    base = os.getenv("NOTIFY_BASE_URL", "https://resulto.com.ar").rstrip("/")
+    share_url = f"{base}/?share={share_id}"
+
+    badge_cache = " (desde caché)" if desde_cache else ""
+    score_color = "#16a34a" if score >= 7 else ("#f59e0b" if score >= 4 else "#dc2626")
+
+    asunto = f"🎯 Nuevo lead RESULTO ({score}/10) — {url[:60]}"
+
+    html = f"""<!doctype html>
+<html><body style="font-family:-apple-system,Segoe UI,sans-serif;background:#f7f7f7;padding:24px;color:#111;">
+  <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:12px;padding:28px 32px;border:1px solid #e5e7eb;">
+    <div style="font-size:13px;color:#6b7280;letter-spacing:.04em;text-transform:uppercase;margin-bottom:6px;">
+      Nuevo lead{badge_cache}
+    </div>
+    <h2 style="margin:0 0 18px;font-size:22px;color:#111;">RESULTO Auditorías</h2>
+
+    <table style="width:100%;border-collapse:collapse;font-size:14px;">
+      <tr><td style="padding:8px 0;color:#6b7280;width:140px;">Email</td>
+          <td style="padding:8px 0;color:#111;"><strong>{email_lead}</strong></td></tr>
+      <tr><td style="padding:8px 0;color:#6b7280;">URL auditada</td>
+          <td style="padding:8px 0;color:#111;"><a href="{url}" style="color:#2563eb;text-decoration:none;">{url}</a></td></tr>
+      <tr><td style="padding:8px 0;color:#6b7280;">Rubro</td>
+          <td style="padding:8px 0;color:#111;">{rubro}</td></tr>
+      <tr><td style="padding:8px 0;color:#6b7280;">Tiempo en mercado</td>
+          <td style="padding:8px 0;color:#111;">{tiempo}</td></tr>
+      <tr><td style="padding:8px 0;color:#6b7280;">Hace publicidad</td>
+          <td style="padding:8px 0;color:#111;">{publicidad}</td></tr>
+      <tr><td style="padding:8px 0;color:#6b7280;">Objetivo</td>
+          <td style="padding:8px 0;color:#111;">{objetivo}</td></tr>
+      <tr><td style="padding:8px 0;color:#6b7280;">Score</td>
+          <td style="padding:8px 0;"><span style="font-weight:700;font-size:18px;color:{score_color};">{score}/10</span></td></tr>
+    </table>
+
+    <div style="margin-top:24px;text-align:center;">
+      <a href="{share_url}" style="display:inline-block;background:#111;color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600;font-size:14px;">
+        Ver auditoría completa →
+      </a>
+    </div>
+
+    <div style="margin-top:24px;font-size:12px;color:#9ca3af;text-align:center;line-height:1.5;">
+      Lead capturado en resulto.com.ar/auditoria<br>
+      Este mail es automático, no respondas. Para cortar las notificaciones, sacá la variable RESEND_API_KEY en Railway.
+    </div>
+  </div>
+</body></html>"""
+
+    texto = (
+        f"Nuevo lead RESULTO{badge_cache}\n\n"
+        f"Email: {email_lead}\n"
+        f"URL: {url}\n"
+        f"Rubro: {rubro}\n"
+        f"Tiempo en mercado: {tiempo}\n"
+        f"Hace publicidad: {publicidad}\n"
+        f"Objetivo: {objetivo}\n"
+        f"Score: {score}/10\n\n"
+        f"Ver auditoría: {share_url}\n"
+    )
+
+    try:
+        # NOTIFY_EMAIL puede ser una lista separada por coma
+        destinatarios = [e.strip() for e in notify_to.split(",") if e.strip()]
+        resp = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": from_addr,
+                "to": destinatarios,
+                "subject": asunto,
+                "html": html,
+                "text": texto,
+            },
+            timeout=10,
+        )
+        if resp.status_code >= 300:
+            print(f"[WARN] Resend devolvió {resp.status_code}: {resp.text[:300]}")
+    except Exception as e:
+        print(f"[WARN] No pude mandar la notificación por mail: {e}")
+
+
 def guardar_auditoria(
     email: str, url: str, rubro: str, tiempo: str,
     publicidad: str, objetivo: str, resultado: dict
@@ -1294,6 +1408,13 @@ async def diagnosticar(
                             email, url, rubro, tiempo, publicidad, objetivo, cached,
                         )
                         cached["share_id"] = share_id
+                        # Notificación por mail al admin (no bloquea si falla)
+                        await asyncio.to_thread(
+                            notificar_lead_por_mail,
+                            share_id, email, url, rubro, tiempo, publicidad,
+                            objetivo, int(cached.get("score", 0) or 0),
+                            True,  # desde_cache
+                        )
                     except Exception as e:
                         print(f"[WARN] No pude guardar el lead cacheado: {e}")
                     yield event(100, "¡Listo!", done=True, result=cached)
@@ -1351,6 +1472,13 @@ async def diagnosticar(
                     email, url, rubro, tiempo, publicidad, objetivo, data_final,
                 )
                 data_final["share_id"] = share_id
+                # Notificación por mail al admin (no bloquea si falla)
+                await asyncio.to_thread(
+                    notificar_lead_por_mail,
+                    share_id, email, url, rubro, tiempo, publicidad,
+                    objetivo, int(data_final.get("score", 0) or 0),
+                    False,  # desde_cache
+                )
             except Exception as e:
                 # Si falla el guardado no rompe la respuesta — el usuario igual ve el resultado
                 print(f"[WARN] No pude guardar la auditoría: {e}")
